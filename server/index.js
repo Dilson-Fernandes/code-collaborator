@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const archiver = require('archiver');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -309,31 +310,132 @@ io.on('connection', (socket) => {
   // Delete file
   socket.on('deleteFile', (data) => {
     const { fileId, folderPath = '' } = data;
+    console.log('Deleting file:', { fileId, folderPath });
     
-    // Try to delete from files first
-    let deleted = deleteFileById(projects['default'].files, fileId);
+    let deleted = false;
     
-    // If not found in files, try folders
+    const deleteFileFromLocation = (files, folders, targetFileId, targetPath) => {
+      console.log('Attempting to delete from location:', { targetFileId, targetPath });
+      
+      if (!targetPath) {
+        // Try to delete from root level
+        for (const [name, file] of Object.entries(files)) {
+          if (file.id === targetFileId) {
+            console.log('Found file in root, deleting:', name);
+            delete files[name];
+            return true;
+          }
+        }
+        return false;
+      }
+      
+      // Find the target folder by path
+      const pathParts = targetPath.split('/').filter(Boolean);
+      let current = folders;
+      let fileParent = null;
+      let fileName = null;
+      
+      // Navigate to the correct folder
+      for (let i = 0; i < pathParts.length; i++) {
+        const part = pathParts[i];
+        if (!current[part] || !current[part].children) {
+          console.log('Folder not found or has no children:', part);
+          return false;
+        }
+        
+        if (i === pathParts.length - 1) {
+          // We're at the parent folder, search its children
+          for (const [name, item] of Object.entries(current[part].children)) {
+            if (item.id === targetFileId) {
+              fileParent = current[part].children;
+              fileName = name;
+              break;
+            }
+          }
+        }
+        current = current[part].children;
+      }
+      
+      // Try to delete the file from this folder
+      if (fileParent && fileName) {
+        console.log('Found file in folder, deleting:', fileName);
+        delete fileParent[fileName];
+        return true;
+      }
+      
+      return false;
+    };
+    
+    // First try to delete from the specified folder path
+    if (folderPath) {
+      deleted = deleteFileFromLocation(
+        projects['default'].files,
+        projects['default'].folders,
+        fileId,
+        folderPath
+      );
+    }
+    
+    // If not found in folders or no folder path specified, try root files
     if (!deleted) {
-      deleted = deleteFileById(projects['default'].folders, fileId);
+      deleted = deleteFileFromLocation(
+        projects['default'].files,
+        projects['default'].folders,
+        fileId,
+        ''
+      );
     }
     
     if (deleted) {
-      // Broadcast to all users in project
-      io.to('default').emit('fileDeleted', fileId);
+      console.log('File deleted successfully');
+      // Broadcast to all users in project with complete info
+      io.to('default').emit('fileDeleted', { fileId, folderPath });
+    } else {
+      console.log('File not found for deletion');
     }
   });
 
   // Delete folder
   socket.on('deleteFolder', (data) => {
-    const { folderId } = data;
+    const { folderName, parentPath = '' } = data;
+    console.log('Deleting folder:', folderName, 'from path:', parentPath);
     
-    // Delete folder from structure
-    const deleted = deleteFolderById(projects['default'].folders, folderId);
+    const deleteFolderInPath = (folders, path) => {
+      if (!path) {
+        if (folders[folderName]) {
+          delete folders[folderName];
+          return true;
+        }
+        return false;
+      }
+      
+      const pathParts = path.split('/').filter(Boolean);
+      let current = folders;
+      
+      for (let i = 0; i < pathParts.length; i++) {
+        const part = pathParts[i];
+        if (!current[part] || current[part].type !== 'folder') {
+          return false;
+        }
+        
+        if (i === pathParts.length - 1) {
+          if (current[part].children && current[part].children[folderName]) {
+            delete current[part].children[folderName];
+            return true;
+          }
+        }
+        current = current[part].children;
+      }
+      return false;
+    };
+    
+    const deleted = deleteFolderInPath(projects['default'].folders, parentPath);
     
     if (deleted) {
-      // Broadcast to all users in project
-      io.to('default').emit('folderDeleted', folderId);
+      console.log('Folder deleted successfully');
+      io.to('default').emit('folderDeleted', { folderName, parentPath });
+    } else {
+      console.log('Folder not found for deletion');
     }
   });
 
@@ -398,35 +500,190 @@ app.get('/api/download/:fileId', (req, res) => {
   res.send(file.content);
 });
 
+// Download single file
+app.get('/api/download/:fileId', (req, res) => {
+  const fileId = req.params.fileId;
+  console.log('\n[Download] File download request received:', { fileId });
+  
+  // Log the current state of files and folders
+  console.log('[Download] Current root files:', Object.keys(projects['default'].files));
+  console.log('[Download] Current root folders:', Object.keys(projects['default'].folders));
+  
+  // Helper function to find a file by ID in the project structure
+  const findFileInFolders = (folders) => {
+    console.log('[Download] Searching folders:', Object.keys(folders));
+    
+    for (const folder of Object.values(folders)) {
+      if (folder.type === 'folder' && folder.children) {
+        console.log('[Download] Checking folder:', folder.name);
+        console.log('[Download] Folder children:', Object.keys(folder.children));
+        
+        for (const item of Object.values(folder.children)) {
+          if (item.id === fileId) {
+            console.log('[Download] Found file in folder:', folder.name);
+            return item;
+          }
+          if (item.type === 'folder' && item.children) {
+            console.log('[Download] Recursing into subfolder:', item.name);
+            const found = findFileInFolders({ [item.name]: item });
+            if (found) return found;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  // Check in root files first
+  console.log('[Download] Checking root files...');
+  let file = Object.values(projects['default'].files).find(f => f.id === fileId);
+  
+  // If not found in root, search folders recursively
+  if (!file) {
+    console.log('[Download] File not found in root, searching folders...');
+    file = findFileInFolders(projects['default'].folders);
+  }
+  
+  if (!file) {
+    console.log('File not found:', fileId);
+    return res.status(404).json({ error: 'File not found' });
+  }
+  
+  console.log('Found file:', file.name);
+  
+  // Set appropriate headers
+  const contentTypes = {
+    'javascript': 'application/javascript',
+    'html': 'text/html',
+    'css': 'text/css',
+    'json': 'application/json'
+  };
+  
+  res.setHeader('Content-Type', contentTypes[file.type] || 'text/plain');
+  res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
+  res.send(file.content);
+});
+
 // Download project as ZIP
 app.get('/api/download-project', (req, res) => {
+  console.log('\n[Download] Project download request received');
+  console.log('[Download] Current project structure:', {
+    rootFiles: Object.keys(projects['default'].files),
+    rootFolders: Object.keys(projects['default'].folders)
+  });
+  
   try {
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    console.log('[Download] Creating ZIP archive...');
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
     
+    // Set headers
+    console.log('[Download] Setting response headers');
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="project.zip"');
+    res.setHeader('Content-Disposition', 'attachment; filename="code-collaborator-project.zip"');
     
+    // Pipe archive data to the response
+    console.log('[Download] Piping archive to response');
     archive.pipe(res);
     
-    // Helper function to add files to archive recursively
-    const addFilesToArchive = (items, basePath = '') => {
-      for (const key in items) {
-        const item = items[key];
-        if (item.type === 'folder' && item.children) {
-          // Add folder and its contents
-          const folderPath = basePath + item.name + '/';
-          addFilesToArchive(item.children, folderPath);
-        } else if (item.content) {
-          // Add file
-          const filePath = basePath + item.name;
-          archive.append(item.content, { name: filePath });
+    // Helper function to add files and folders to archive
+    const addFilesToArchive = (files, folders, basePath = '') => {
+      try {
+        console.log(`\n[Download] Processing path: ${basePath || 'root'}`);
+        
+        // Add root files
+        if (files && typeof files === 'object') {
+          const fileNames = Object.keys(files);
+          console.log(`[Download] Found ${fileNames.length} files in ${basePath || 'root'}:`, fileNames);
+          
+          Object.values(files).forEach(file => {
+            if (file && file.name) {
+              const filePath = path.join(basePath, file.name).replace(/\\/g, '/');
+              console.log(`[Download] Adding file: ${filePath}`);
+              console.log(`[Download] File details:`, {
+                name: file.name,
+                type: file.type,
+                hasContent: !!file.content,
+                contentLength: file.content ? file.content.length : 0
+              });
+              archive.append(file.content || '', { name: filePath });
+            } else {
+              console.log(`[Download] Invalid file object:`, file);
+            }
+          });
+        } else {
+          console.log(`[Download] No files found in ${basePath || 'root'}`);
         }
+        
+        // Add folders recursively
+        if (folders && typeof folders === 'object') {
+          const folderNames = Object.keys(folders);
+          console.log(`[Download] Found ${folderNames.length} folders in ${basePath || 'root'}:`, folderNames);
+          
+          Object.values(folders).forEach(folder => {
+            if (folder && folder.type === 'folder' && folder.name) {
+              const folderPath = path.join(basePath, folder.name).replace(/\\/g, '/');
+              console.log(`\n[Download] Processing folder: ${folderPath}`);
+              console.log(`[Download] Folder details:`, {
+                name: folder.name,
+                type: folder.type,
+                hasChildren: !!folder.children,
+                childrenCount: folder.children ? Object.keys(folder.children).length : 0
+              });
+              
+              // Create empty folder in zip
+              console.log(`[Download] Creating folder in ZIP: ${folderPath}/`);
+              archive.append(null, { name: `${folderPath}/` });
+              
+              if (folder.children && typeof folder.children === 'object') {
+                const children = Object.values(folder.children);
+                console.log(`[Download] Processing ${children.length} children in folder ${folder.name}`);
+                
+                children.forEach(item => {
+                  if (item.type === 'folder') {
+                    console.log(`[Download] Found nested folder: ${item.name}`);
+                    // Recursively add nested folder
+                    addFilesToArchive({}, { [item.name]: item }, folderPath);
+                  } else if (item.name) {
+                    // Add file from folder
+                    const itemPath = path.join(folderPath, item.name).replace(/\\/g, '/');
+                    console.log(`[Download] Adding file from folder: ${itemPath}`);
+                    console.log(`[Download] File details:`, {
+                      name: item.name,
+                      type: item.type,
+                      hasContent: !!item.content,
+                      contentLength: item.content ? item.content.length : 0
+                    });
+                    archive.append(item.content || '', { name: itemPath });
+                  }
+                });
+              } else {
+                console.log(`[Download] No children found in folder: ${folder.name}`);
+              }
+            } else {
+              console.log(`[Download] Invalid folder object:`, folder);
+            }
+          });
+        } else {
+          console.log(`[Download] No folders found in ${basePath || 'root'}`);
+        }
+      } catch (err) {
+        console.error('Error while adding files to archive:', err);
+        throw err;
       }
     };
     
-    // Add all files and folders to archive
-    addFilesToArchive({ ...projects['default'].files, ...projects['default'].folders });
+    console.log('Starting archive creation...');
     
+    // Add all files and folders to archive
+    addFilesToArchive(projects['default'].files, projects['default'].folders);
+    
+    // Handle archive warnings
+    archive.on('warning', (err) => {
+      console.warn('Archive warning:', err);
+    });
+
     // Handle archive errors
     archive.on('error', (err) => {
       console.error('Archive error:', err);
@@ -434,7 +691,9 @@ app.get('/api/download-project', (req, res) => {
         res.status(500).json({ error: 'Failed to create archive' });
       }
     });
-    
+
+    // Finalize the archive
+    console.log('Finalizing archive...');
     archive.finalize();
   } catch (error) {
     console.error('Download project error:', error);

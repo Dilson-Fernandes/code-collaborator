@@ -395,23 +395,72 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
     }
   };
 
-  const handleDownloadFile = (e, fileId, fileName) => {
+  const handleDownloadFile = async (e, fileId, fileName) => {
     e.stopPropagation();
-    const link = document.createElement('a');
-    link.href = `/api/download/${fileId}`;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    console.log('[Download] Starting file download:', { fileId, fileName });
+    
+    try {
+      const link = document.createElement('a');
+      link.href = `/api/download/${fileId}`;
+      link.download = fileName;
+      console.log('[Download] Created download link:', link.href);
+      
+      // Add error handling for the download
+      const response = await fetch(link.href);
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Download failed: ${error}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      link.href = url;
+      
+      document.body.appendChild(link);
+      console.log('[Download] Triggering download...');
+      link.click();
+      
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      console.log('[Download] File download completed');
+    } catch (error) {
+      console.error('[Download] Error downloading file:', error);
+      alert('Failed to download file. Please try again.');
+    }
   };
 
-  const handleDownloadProject = () => {
-    const link = document.createElement('a');
-    link.href = '/api/download-project';
-    link.download = 'code-collaborator-project.zip';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleDownloadProject = async () => {
+    console.log('[Download] Starting project download');
+    
+    try {
+      console.log('[Download] Fetching project ZIP...');
+      const response = await fetch('/api/download-project');
+      
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Download failed: ${error}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'code-collaborator-project.zip';
+      
+      document.body.appendChild(link);
+      console.log('[Download] Triggering ZIP download...');
+      link.click();
+      
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      console.log('[Download] Project download completed');
+    } catch (error) {
+      console.error('[Download] Error downloading project:', error);
+      alert('Failed to download project. Please try again.');
+    }
   };
 
   if (!project) return null;

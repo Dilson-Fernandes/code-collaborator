@@ -127,24 +127,143 @@ function App() {
       }));
     });
 
-    newSocket.on('fileDeleted', (fileId) => {
+    newSocket.on('fileDeleted', ({ fileId, folderPath }) => {
       setProject(prev => {
-        const newFiles = { ...prev.files };
-        delete newFiles[fileId];
-        return {
-          ...prev,
-          files: newFiles
-        };
+        const newProject = { ...prev };
+        
+        if (folderPath) {
+          // File is in a folder
+          const pathParts = folderPath.split('/').filter(Boolean);
+          let current = newProject.folders;
+          let parent = null;
+          
+          // Navigate to the correct folder
+          for (const part of pathParts) {
+            parent = current;
+            if (!current[part]) break;
+            if (!current[part].children) {
+              current[part].children = {};
+            }
+            current = current[part].children;
+          }
+          
+          // Delete the file from the folder
+          if (current && current[fileId]) {
+            const deepClone = JSON.parse(JSON.stringify(current[fileId]));
+            delete current[fileId];
+            // Deep clone and return to ensure React re-renders
+            return JSON.parse(JSON.stringify(newProject));
+          }
+        } else {
+          // File is in root
+          if (newProject.files[fileId]) {
+            delete newProject.files[fileId];
+            // Deep clone and return to ensure React re-renders
+            return JSON.parse(JSON.stringify(newProject));
+          }
+        }
+        
+        return newProject;
       });
       
       // If deleted file was current file, switch to another file
       if (currentFile && currentFile.id === fileId) {
-        const remainingFiles = Object.values(project?.files || {}).filter(f => f.id !== fileId);
-        if (remainingFiles.length > 0) {
-          setCurrentFile(remainingFiles[0]);
-          newSocket.emit('joinFile', remainingFiles[0].id);
+        // Try to find another file to show
+        const findFirstAvailableFile = (project) => {
+          // Check root files first
+          const rootFiles = Object.values(project?.files || {});
+          if (rootFiles.length > 0) return rootFiles[0];
+          
+          // Then check folders
+          const findInFolders = (folders) => {
+            for (const folder of Object.values(folders)) {
+              if (folder.type === 'folder' && folder.children) {
+                const files = Object.values(folder.children).filter(item => item.type !== 'folder');
+                if (files.length > 0) return files[0];
+                const found = findInFolders(folder.children);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          
+          return findInFolders(project?.folders || {});
+        };
+        
+        const nextFile = findFirstAvailableFile(project);
+        if (nextFile) {
+          setCurrentFile(nextFile);
+          newSocket.emit('joinFile', nextFile.id);
         } else {
           setCurrentFile(null);
+        }
+      }
+    });
+
+    newSocket.on('folderDeleted', ({ folderName, parentPath }) => {
+      setProject(prev => {
+        const newProject = { ...prev };
+        
+        if (parentPath) {
+          // Folder is nested
+          const pathParts = parentPath.split('/').filter(Boolean);
+          let current = newProject.folders;
+          
+          // Navigate to the parent folder
+          for (const part of pathParts) {
+            if (!current[part] || !current[part].children) break;
+            current = current[part].children;
+          }
+          
+          // Delete the folder
+          if (current[folderName]) {
+            delete current[folderName];
+          }
+        } else {
+          // Folder is in root
+          if (newProject.folders[folderName]) {
+            delete newProject.folders[folderName];
+          }
+        }
+        
+        return newProject;
+      });
+      
+      // If current file was in the deleted folder, switch to another file
+      if (currentFile) {
+        const currentFilePath = currentFile.path || '';
+        const deletedFolderPath = parentPath ? `${parentPath}/${folderName}` : folderName;
+        
+        if (currentFilePath.startsWith(deletedFolderPath)) {
+          // Current file was in the deleted folder, find another file
+          const findFirstAvailableFile = (project) => {
+            // Check root files first
+            const rootFiles = Object.values(project?.files || {});
+            if (rootFiles.length > 0) return rootFiles[0];
+            
+            // Then check folders
+            const findInFolders = (folders) => {
+              for (const folder of Object.values(folders)) {
+                if (folder.type === 'folder' && folder.children) {
+                  const files = Object.values(folder.children).filter(item => item.type !== 'folder');
+                  if (files.length > 0) return files[0];
+                  const found = findInFolders(folder.children);
+                  if (found) return found;
+                }
+              }
+              return null;
+            };
+            
+            return findInFolders(project?.folders || {});
+          };
+          
+          const nextFile = findFirstAvailableFile(project);
+          if (nextFile) {
+            setCurrentFile(nextFile);
+            newSocket.emit('joinFile', nextFile.id);
+          } else {
+            setCurrentFile(null);
+          }
         }
       }
     });
