@@ -385,13 +385,57 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
 
   const handleDeleteFile = (e, fileId, folderPath = '') => {
     e.stopPropagation();
+    console.log('\n[CLIENT DELETE] File deletion initiated:', {
+      fileId,
+      folderPath: folderPath || 'root',
+      timestamp: new Date().toISOString()
+    });
+    console.log('[CLIENT DELETE] Current project structure:', {
+      rootFiles: Object.keys(project.files || {}),
+      rootFolders: Object.keys(project.folders || {})
+    });
     onDeleteFile(fileId, folderPath);
   };
 
   const handleDeleteFolder = (e, folderId) => {
     e.stopPropagation();
+    console.log('\n[CLIENT DELETE] Folder deletion requested:', {
+      folderId,
+      timestamp: new Date().toISOString()
+    });
+    
+    const findFolderPath = (folders, targetId, currentPath = '') => {
+      for (const [name, folder] of Object.entries(folders)) {
+        if (folder.id === targetId) {
+          return currentPath ? `${currentPath}/${name}` : name;
+        }
+        if (folder.type === 'folder' && folder.children) {
+          const path = findFolderPath(
+            folder.children,
+            targetId,
+            currentPath ? `${currentPath}/${name}` : name
+          );
+          if (path) return path;
+        }
+      }
+      return null;
+    };
+
+    const folderPath = findFolderPath(project.folders || {}, folderId);
+    console.log('[CLIENT DELETE] Found folder details:', {
+      folderId,
+      folderPath: folderPath || 'root',
+      exists: !!folderPath
+    });
+
     if (window.confirm(`Are you sure you want to delete this folder and all its contents?`)) {
-      onDeleteFolder(folderId, '');
+      console.log('[CLIENT DELETE] User confirmed folder deletion:', {
+        folderId,
+        folderPath: folderPath || 'root'
+      });
+      onDeleteFolder(folderId, folderPath || '');
+    } else {
+      console.log('[CLIENT DELETE] Folder deletion cancelled by user');
     }
   };
 

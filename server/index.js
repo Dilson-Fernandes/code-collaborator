@@ -310,132 +310,283 @@ io.on('connection', (socket) => {
   // Delete file
   socket.on('deleteFile', (data) => {
     const { fileId, folderPath = '' } = data;
-    console.log('Deleting file:', { fileId, folderPath });
+    console.log('\n[DELETE] File deletion request received:', { 
+      fileId, 
+      folderPath,
+      timestamp: new Date().toISOString()
+    });
+    console.log('[DELETE] Current project structure:', {
+      rootFiles: Object.keys(projects['default'].files),
+      rootFolders: Object.keys(projects['default'].folders)
+    });
     
     let deleted = false;
     
     const deleteFileFromLocation = (files, folders, targetFileId, targetPath) => {
-      console.log('Attempting to delete from location:', { targetFileId, targetPath });
+      console.log('\n[DELETE] Starting file deletion process:', { 
+        targetFileId, 
+        targetPath,
+        filesInRoot: Object.keys(files),
+        foldersAvailable: Object.keys(folders)
+      });
       
-      if (!targetPath) {
-        // Try to delete from root level
-        for (const [name, file] of Object.entries(files)) {
-          if (file.id === targetFileId) {
-            console.log('Found file in root, deleting:', name);
-            delete files[name];
+      const findAndDeleteFile = (container) => {
+        for (const [name, item] of Object.entries(container)) {
+          console.log(`[DELETE] Checking item: ${name}`, {
+            itemId: item.id,
+            targetId: targetFileId,
+            itemName: name,
+            matches: item.id === targetFileId || name === targetFileId // Check both ID and name
+          });
+          if (item.id === targetFileId || name === targetFileId) { // Check both ID and name
+            console.log('[DELETE] Found matching file, deleting:', {
+              name,
+              itemDetails: item
+            });
+            delete container[name];
             return true;
           }
         }
+        return false;
+      };
+
+      if (!targetPath) {
+        console.log('[DELETE] Attempting to delete from root level');
+        // Try to delete from root level
+        if (findAndDeleteFile(files)) {
+          console.log('[DELETE] File deleted from root successfully');
+          return true;
+        }
+        console.log('[DELETE] File not found in root level');
         return false;
       }
       
       // Find the target folder by path
       const pathParts = targetPath.split('/').filter(Boolean);
+      console.log('[DELETE] Parsed folder path:', {
+        originalPath: targetPath,
+        pathParts,
+        partsCount: pathParts.length
+      });
+
       let current = folders;
-      let fileParent = null;
-      let fileName = null;
       
       // Navigate to the correct folder
       for (let i = 0; i < pathParts.length; i++) {
         const part = pathParts[i];
+        console.log(`\n[DELETE] Navigating folder structure [${i + 1}/${pathParts.length}]:`, {
+          currentFolder: part,
+          hasFolder: !!current[part],
+          hasChildren: current[part] ? !!current[part].children : false,
+          availableFolders: Object.keys(current)
+        });
+
         if (!current[part] || !current[part].children) {
-          console.log('Folder not found or has no children:', part);
+          console.log('[DELETE] ❌ Folder navigation failed:', {
+            missingFolder: part,
+            reason: !current[part] ? 'Folder does not exist' : 'Folder has no children',
+            currentLocation: pathParts.slice(0, i).join('/')
+          });
           return false;
         }
         
         if (i === pathParts.length - 1) {
+          console.log('[DELETE] Reached target folder, searching for file');
           // We're at the parent folder, search its children
-          for (const [name, item] of Object.entries(current[part].children)) {
-            if (item.id === targetFileId) {
-              fileParent = current[part].children;
-              fileName = name;
-              break;
-            }
+          const children = current[part].children;
+          console.log('[DELETE] Folder contents:', {
+            folderName: part,
+            childrenCount: Object.keys(children).length,
+            availableFiles: Object.keys(children)
+          });
+
+          // Try to find and delete the file in this folder
+          if (findAndDeleteFile(children)) {
+            console.log('[DELETE] ✓ File deleted from folder successfully');
+            return true;
           }
+          
+          console.log('[DELETE] ❌ File not found in target folder');
+          return false;
         }
         current = current[part].children;
       }
       
       // Try to delete the file from this folder
       if (fileParent && fileName) {
-        console.log('Found file in folder, deleting:', fileName);
+        console.log('[DELETE] Attempting to delete file from folder:', {
+          fileName,
+          parentFolder: Object.keys(fileParent),
+          fullPath: targetPath + '/' + fileName
+        });
         delete fileParent[fileName];
+        console.log('[DELETE] ✓ File successfully deleted from folder');
         return true;
       }
       
+      console.log('[DELETE] ❌ File not found in target folder:', {
+        hasParent: !!fileParent,
+        hasFileName: !!fileName,
+        targetPath
+      });
       return false;
     };
     
     // First try to delete from the specified folder path
+    console.log('\n[DELETE] Starting deletion process...');
     if (folderPath) {
+      console.log('[DELETE] Attempting to delete from specified folder path:', folderPath);
       deleted = deleteFileFromLocation(
         projects['default'].files,
         projects['default'].folders,
         fileId,
         folderPath
       );
+      console.log('[DELETE] Folder path deletion result:', {
+        success: deleted,
+        folderPath
+      });
     }
     
     // If not found in folders or no folder path specified, try root files
     if (!deleted) {
+      console.log('[DELETE] File not found in specified path, trying root level');
       deleted = deleteFileFromLocation(
         projects['default'].files,
         projects['default'].folders,
         fileId,
         ''
       );
+      console.log('[DELETE] Root level deletion result:', {
+        success: deleted
+      });
     }
     
     if (deleted) {
-      console.log('File deleted successfully');
+      console.log('[DELETE] ✓ File deletion operation successful:', {
+        fileId,
+        folderPath,
+        timestamp: new Date().toISOString()
+      });
       // Broadcast to all users in project with complete info
       io.to('default').emit('fileDeleted', { fileId, folderPath });
     } else {
-      console.log('File not found for deletion');
+      console.log('[DELETE] ❌ File deletion operation failed:', {
+        fileId,
+        folderPath,
+        reason: 'File not found in specified location or root',
+        timestamp: new Date().toISOString()
+      });
     }
   });
 
   // Delete folder
   socket.on('deleteFolder', (data) => {
     const { folderName, parentPath = '' } = data;
-    console.log('Deleting folder:', folderName, 'from path:', parentPath);
+    console.log('\n[FOLDER DELETE] Folder deletion request received:', {
+      folderName,
+      parentPath,
+      timestamp: new Date().toISOString()
+    });
+    
+    console.log('[FOLDER DELETE] Current folder structure:', {
+      rootFolders: Object.keys(projects['default'].folders),
+      targetFolder: folderName,
+      parentPath: parentPath || 'root'
+    });
     
     const deleteFolderInPath = (folders, path) => {
+      console.log('\n[FOLDER DELETE] Starting folder deletion process:', {
+        targetFolder: folderName,
+        path: path || 'root',
+        availableFolders: Object.keys(folders)
+      });
+
       if (!path) {
+        console.log('[FOLDER DELETE] Attempting to delete from root level');
         if (folders[folderName]) {
+          console.log('[FOLDER DELETE] Found folder in root, deleting:', {
+            folderName,
+            folderDetails: folders[folderName]
+          });
           delete folders[folderName];
           return true;
         }
+        console.log('[FOLDER DELETE] Folder not found in root level');
         return false;
       }
       
       const pathParts = path.split('/').filter(Boolean);
+      console.log('[FOLDER DELETE] Parsed parent path:', {
+        originalPath: path,
+        pathParts,
+        partsCount: pathParts.length
+      });
+
       let current = folders;
       
       for (let i = 0; i < pathParts.length; i++) {
         const part = pathParts[i];
+        console.log(`\n[FOLDER DELETE] Navigating folder structure [${i + 1}/${pathParts.length}]:`, {
+          currentFolder: part,
+          hasFolder: !!current[part],
+          isFolder: current[part] ? current[part].type === 'folder' : false,
+          hasChildren: current[part] ? !!current[part].children : false,
+          availableFolders: Object.keys(current)
+        });
+
         if (!current[part] || current[part].type !== 'folder') {
+          console.log('[FOLDER DELETE] ❌ Folder navigation failed:', {
+            missingFolder: part,
+            reason: !current[part] ? 'Folder does not exist' : 'Not a folder type',
+            currentLocation: pathParts.slice(0, i).join('/')
+          });
           return false;
         }
         
         if (i === pathParts.length - 1) {
+          console.log('[FOLDER DELETE] Reached parent folder, checking for target');
           if (current[part].children && current[part].children[folderName]) {
+            console.log('[FOLDER DELETE] Found target folder, deleting:', {
+              parentFolder: part,
+              targetFolder: folderName,
+              folderDetails: current[part].children[folderName]
+            });
             delete current[part].children[folderName];
             return true;
           }
+          console.log('[FOLDER DELETE] Target folder not found in parent:', {
+            parentFolder: part,
+            targetFolder: folderName,
+            availableChildren: Object.keys(current[part].children || {})
+          });
         }
         current = current[part].children;
       }
+      
+      console.log('[FOLDER DELETE] ❌ Folder not found in specified path:', {
+        folderName,
+        path: pathParts.join('/')
+      });
       return false;
     };
     
     const deleted = deleteFolderInPath(projects['default'].folders, parentPath);
     
     if (deleted) {
-      console.log('Folder deleted successfully');
+      console.log('[FOLDER DELETE] ✓ Folder deletion operation successful:', {
+        folderName,
+        parentPath: parentPath || 'root',
+        timestamp: new Date().toISOString()
+      });
       io.to('default').emit('folderDeleted', { folderName, parentPath });
     } else {
-      console.log('Folder not found for deletion');
+      console.log('[FOLDER DELETE] ❌ Folder deletion operation failed:', {
+        folderName,
+        parentPath: parentPath || 'root',
+        reason: 'Folder not found in specified location',
+        timestamp: new Date().toISOString()
+      });
     }
   });
 

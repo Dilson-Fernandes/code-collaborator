@@ -128,20 +128,44 @@ function App() {
     });
 
     newSocket.on('fileDeleted', ({ fileId, folderPath }) => {
+      console.log('\n[CLIENT APP] Received fileDeleted event:', {
+        fileId,
+        folderPath: folderPath || 'root',
+        timestamp: new Date().toISOString()
+      });
+
       setProject(prev => {
+        console.log('[CLIENT APP] Current project state:', {
+          rootFiles: Object.keys(prev.files || {}),
+          rootFolders: Object.keys(prev.folders || {})
+        });
+
         const newProject = { ...prev };
         
         if (folderPath) {
+          console.log('[CLIENT APP] Attempting to delete file from folder:', folderPath);
           // File is in a folder
           const pathParts = folderPath.split('/').filter(Boolean);
+          console.log('[CLIENT APP] Folder path parts:', pathParts);
+
           let current = newProject.folders;
           let parent = null;
           
           // Navigate to the correct folder
           for (const part of pathParts) {
+            console.log(`[CLIENT APP] Navigating to folder: ${part}`, {
+              available: Object.keys(current),
+              hasFolder: !!current[part],
+              hasChildren: current[part] ? !!current[part].children : false
+            });
+
             parent = current;
-            if (!current[part]) break;
+            if (!current[part]) {
+              console.log(`[CLIENT APP] ❌ Folder not found: ${part}`);
+              break;
+            }
             if (!current[part].children) {
+              console.log(`[CLIENT APP] Creating children object for folder: ${part}`);
               current[part].children = {};
             }
             current = current[part].children;
@@ -149,17 +173,40 @@ function App() {
           
           // Delete the file from the folder
           if (current && current[fileId]) {
+            console.log('[CLIENT APP] Found file in folder, deleting:', {
+              fileId,
+              fileName: current[fileId].name,
+              folderPath
+            });
             const deepClone = JSON.parse(JSON.stringify(current[fileId]));
             delete current[fileId];
+            console.log('[CLIENT APP] File deleted successfully from folder');
             // Deep clone and return to ensure React re-renders
             return JSON.parse(JSON.stringify(newProject));
+          } else {
+            console.log('[CLIENT APP] ❌ File not found in specified folder:', {
+              fileId,
+              folderPath,
+              currentFolder: current ? Object.keys(current) : null
+            });
           }
         } else {
+          console.log('[CLIENT APP] Attempting to delete file from root');
           // File is in root
           if (newProject.files[fileId]) {
+            console.log('[CLIENT APP] Found file in root, deleting:', {
+              fileId,
+              fileName: newProject.files[fileId].name
+            });
             delete newProject.files[fileId];
+            console.log('[CLIENT APP] File deleted successfully from root');
             // Deep clone and return to ensure React re-renders
             return JSON.parse(JSON.stringify(newProject));
+          } else {
+            console.log('[CLIENT APP] ❌ File not found in root:', {
+              fileId,
+              availableFiles: Object.keys(newProject.files)
+            });
           }
         }
         
@@ -303,14 +350,38 @@ function App() {
   };
 
   const handleDeleteFile = (fileId, folderPath = '') => {
+    console.log('\n[CLIENT APP] Handling file deletion request:', {
+      fileId,
+      folderPath: folderPath || 'root',
+      hasSocket: !!socket,
+      timestamp: new Date().toISOString()
+    });
+
     if (socket && window.confirm('Are you sure you want to delete this file?')) {
+      console.log('[CLIENT APP] User confirmed file deletion, emitting deleteFile event');
       socket.emit('deleteFile', { fileId, folderPath });
+    } else {
+      console.log('[CLIENT APP] File deletion cancelled:', {
+        reason: !socket ? 'No socket connection' : 'User cancelled',
+        fileId,
+        folderPath: folderPath || 'root'
+      });
     }
   };
 
   const handleDeleteFolder = (folderName, parentPath = '') => {
+    console.log('\n[CLIENT APP] Handling folder deletion request:', {
+      folderName,
+      parentPath: parentPath || 'root',
+      hasSocket: !!socket,
+      timestamp: new Date().toISOString()
+    });
+
     if (socket) {
+      console.log('[CLIENT APP] Emitting deleteFolder event to server');
       socket.emit('deleteFolder', { folderName, parentPath });
+    } else {
+      console.error('[CLIENT APP] Socket not available for folder deletion');
     }
   };
 
