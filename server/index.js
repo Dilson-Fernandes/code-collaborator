@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const archiver = require('archiver');
 
 const app = express();
 const server = http.createServer(app);
@@ -75,6 +76,70 @@ let projects = {
 let users = new Map(); // socketId -> user info
 let fileEditors = new Map(); // fileId -> Set of socketIds editing
 
+// Helper function to find file by ID
+const findFileById = (items, targetId) => {
+  for (const key in items) {
+    const item = items[key];
+    if (item.id === targetId) {
+      return item;
+    }
+    if (item.type === 'folder' && item.children) {
+      const found = findFileById(item.children, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
+// Helper function to delete file by ID
+const deleteFileById = (items, targetId) => {
+  for (const key in items) {
+    const item = items[key];
+    if (item.id === targetId) {
+      delete items[key];
+      return true;
+    }
+    if (item.type === 'folder' && item.children) {
+      if (deleteFileById(item.children, targetId)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+// Helper function to delete folder by ID
+const deleteFolderById = (items, targetId) => {
+  for (const key in items) {
+    const item = items[key];
+    if (item.id === targetId) {
+      delete items[key];
+      return true;
+    }
+    if (item.type === 'folder' && item.children) {
+      if (deleteFolderById(item.children, targetId)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+// Helper function to find folder by path
+const findFolderByPath = (folders, targetPath) => {
+  for (const folderName in folders) {
+    const folder = folders[folderName];
+    if (folder.path === targetPath) {
+      return folder;
+    }
+    if (folder.type === 'folder' && folder.children) {
+      const found = findFolderByPath(folder.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
+};
+
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -118,25 +183,7 @@ io.on('connection', (socket) => {
     
     // Send current file content
     const project = projects['default'];
-    let file = project.files[fileId];
-    
-    // If not found in root files, search in folders
-    if (!file) {
-      const findFileInFolders = (folders) => {
-        for (const folder of Object.values(folders)) {
-          if (folder.type === 'folder') {
-            if (folder.children[fileId]) {
-              return folder.children[fileId];
-            }
-            const found = findFileInFolders(folder.children);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      
-      file = findFileInFolders(project.folders);
-    }
+    const file = findFileById({ ...project.files, ...project.folders }, fileId);
     
     if (file) {
       socket.emit('fileLoaded', file);
@@ -154,30 +201,25 @@ io.on('connection', (socket) => {
   socket.on('editFile', (data) => {
     const { fileId, content, cursorPosition } = data;
     
-    // Update file content in root files
-    if (projects['default'].files[fileId]) {
-      projects['default'].files[fileId].content = content;
-      projects['default'].files[fileId].lastModified = Date.now();
-    } else {
-      // Search and update in folders
-      const updateFileInFolders = (folders) => {
-        for (const folder of Object.values(folders)) {
-          if (folder.type === 'folder') {
-            if (folder.children[fileId]) {
-              folder.children[fileId].content = content;
-              folder.children[fileId].lastModified = Date.now();
-              return true;
-            }
-            if (updateFileInFolders(folder.children)) {
-              return true;
-            }
+    // Find and update file content
+    const updateFileInStructure = (items) => {
+      for (const key in items) {
+        const item = items[key];
+        if (item.id === fileId) {
+          item.content = content;
+          item.lastModified = Date.now();
+          return true;
+        }
+        if (item.type === 'folder' && item.children) {
+          if (updateFileInStructure(item.children)) {
+            return true;
           }
         }
-        return false;
-      };
-      
-      updateFileInFolders(projects['default'].folders);
-    }
+      }
+      return false;
+    };
+    
+    updateFileInStructure({ ...projects['default'].files, ...projects['default'].folders });
     
     // Broadcast to other users editing the same file
     socket.to(fileId).emit('fileUpdated', {
@@ -215,9 +257,15 @@ io.on('connection', (socket) => {
       path: folderPath ? `${folderPath}/${name}` : name
     };
     
-    if (folderPath && projects['default'].folders[folderPath]) {
-      // Add to specific folder
-      projects['default'].folders[folderPath].children[name] = newFile;
+    if (folderPath) {
+      // Find the target folder by path
+      const targetFolder = findFolderByPath(projects['default'].folders, folderPath);
+      if (targetFolder) {
+        targetFolder.children[name] = newFile;
+      } else {
+        // If folder not found, add to root
+        projects['default'].files[name] = newFile;
+      }
     } else {
       // Add to root
       projects['default'].files[name] = newFile;
@@ -240,9 +288,15 @@ io.on('connection', (socket) => {
       path: parentPath ? `${parentPath}/${name}` : name
     };
     
-    if (parentPath && projects['default'].folders[parentPath]) {
-      // Add to specific parent folder
-      projects['default'].folders[parentPath].children[name] = newFolder;
+    if (parentPath) {
+      // Find the parent folder by path
+      const parentFolder = findFolderByPath(projects['default'].folders, parentPath);
+      if (parentFolder) {
+        parentFolder.children[name] = newFolder;
+      } else {
+        // If parent not found, add to root
+        projects['default'].folders[name] = newFolder;
+      }
     } else {
       // Add to root
       projects['default'].folders[name] = newFolder;
@@ -256,28 +310,31 @@ io.on('connection', (socket) => {
   socket.on('deleteFile', (data) => {
     const { fileId, folderPath = '' } = data;
     
-    if (folderPath && projects['default'].folders[folderPath]?.children[fileId]) {
-      delete projects['default'].folders[folderPath].children[fileId];
-    } else if (projects['default'].files[fileId]) {
-      delete projects['default'].files[fileId];
+    // Try to delete from files first
+    let deleted = deleteFileById(projects['default'].files, fileId);
+    
+    // If not found in files, try folders
+    if (!deleted) {
+      deleted = deleteFileById(projects['default'].folders, fileId);
     }
     
-    // Broadcast to all users in project
-    io.to('default').emit('fileDeleted', fileId);
+    if (deleted) {
+      // Broadcast to all users in project
+      io.to('default').emit('fileDeleted', fileId);
+    }
   });
 
   // Delete folder
   socket.on('deleteFolder', (data) => {
-    const { folderName, parentPath = '' } = data;
+    const { folderId } = data;
     
-    if (parentPath && projects['default'].folders[parentPath]?.children[folderName]) {
-      delete projects['default'].folders[parentPath].children[folderName];
-    } else if (projects['default'].folders[folderName]) {
-      delete projects['default'].folders[folderName];
+    // Delete folder from structure
+    const deleted = deleteFolderById(projects['default'].folders, folderId);
+    
+    if (deleted) {
+      // Broadcast to all users in project
+      io.to('default').emit('folderDeleted', folderId);
     }
-    
-    // Broadcast to all users in project
-    io.to('default').emit('folderDeleted', folderName);
   });
 
   // Handle disconnection
@@ -309,7 +366,7 @@ app.get('/api/projects/:projectId', (req, res) => {
 
 app.get('/api/files/:fileId', (req, res) => {
   const fileId = req.params.fileId;
-  const file = projects['default'].files[fileId];
+  const file = findFileById({ ...projects['default'].files, ...projects['default'].folders }, fileId);
   if (file) {
     res.json(file);
   } else {
@@ -320,64 +377,71 @@ app.get('/api/files/:fileId', (req, res) => {
 // Download single file
 app.get('/api/download/:fileId', (req, res) => {
   const fileId = req.params.fileId;
+  console.log('Download request for file ID:', fileId);
   
-  // Search in root files
-  let file = projects['default'].files[fileId];
-  
-  // If not found in root, search in folders
-  if (!file) {
-    const searchInFolders = (folders) => {
-      for (const folder of Object.values(folders)) {
-        if (folder.type === 'folder') {
-          if (folder.children[fileId]) {
-            return folder.children[fileId];
-          }
-          const found = searchInFolders(folder.children);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-    
-    file = searchInFolders(projects['default'].folders);
-  }
+  const file = findFileById({ ...projects['default'].files, ...projects['default'].folders }, fileId);
   
   if (!file) {
+    console.log('File not found for ID:', fileId);
     return res.status(404).json({ error: 'File not found' });
   }
   
-  res.setHeader('Content-Type', 'text/plain');
+  const contentTypes = {
+    'javascript': 'application/javascript',
+    'html': 'text/html',
+    'css': 'text/css',
+    'json': 'application/json'
+  };
+  
+  res.setHeader('Content-Type', contentTypes[file.type] || 'text/plain');
   res.setHeader('Content-Disposition', `attachment; filename="${file.name}"`);
   res.send(file.content);
 });
 
 // Download project as ZIP
 app.get('/api/download-project', (req, res) => {
-  const archiver = require('archiver');
-  const archive = archiver('zip', { zlib: { level: 9 } });
-  
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', 'attachment; filename="project.zip"');
-  
-  archive.pipe(res);
-  
-  // Add files to archive
-  const addFilesToArchive = (files, folders, prefix = '') => {
-    // Add root files
-    Object.values(files).forEach(file => {
-      archive.append(file.content, { name: prefix + file.name });
-    });
+  try {
+    const archive = archiver('zip', { zlib: { level: 9 } });
     
-    // Add folder contents recursively
-    Object.values(folders).forEach(folder => {
-      if (folder.type === 'folder') {
-        addFilesToArchive(folder.children, {}, prefix + folder.name + '/');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="project.zip"');
+    
+    archive.pipe(res);
+    
+    // Helper function to add files to archive recursively
+    const addFilesToArchive = (items, basePath = '') => {
+      for (const key in items) {
+        const item = items[key];
+        if (item.type === 'folder' && item.children) {
+          // Add folder and its contents
+          const folderPath = basePath + item.name + '/';
+          addFilesToArchive(item.children, folderPath);
+        } else if (item.content) {
+          // Add file
+          const filePath = basePath + item.name;
+          archive.append(item.content, { name: filePath });
+        }
+      }
+    };
+    
+    // Add all files and folders to archive
+    addFilesToArchive({ ...projects['default'].files, ...projects['default'].folders });
+    
+    // Handle archive errors
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to create archive' });
       }
     });
-  };
-  
-  addFilesToArchive(projects['default'].files, projects['default'].folders);
-  archive.finalize();
+    
+    archive.finalize();
+  } catch (error) {
+    console.error('Download project error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to create project archive' });
+    }
+  }
 });
 
 // Serve React app for all other routes

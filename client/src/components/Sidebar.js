@@ -316,7 +316,7 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
           <FolderName>{folder.name}</FolderName>
           <FolderActions>
             <ActionButton
-              onClick={(e) => handleDeleteFolder(e, folder.name)}
+              onClick={(e) => handleDeleteFolder(e, folder.id)}
               title="Delete folder"
             >
               <Trash2 size={14} />
@@ -349,7 +349,7 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
                         <Download size={14} />
                       </ActionButton>
                       <ActionButton
-                        onClick={(e) => handleDeleteFile(e, item.id, folder.name)}
+                        onClick={(e) => handleDeleteFile(e, item.id, folder.path)}
                         title="Delete file"
                       >
                         <Trash2 size={14} />
@@ -388,10 +388,10 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
     onDeleteFile(fileId, folderPath);
   };
 
-  const handleDeleteFolder = (e, folderName, parentPath = '') => {
+  const handleDeleteFolder = (e, folderId) => {
     e.stopPropagation();
-    if (window.confirm(`Are you sure you want to delete the folder "${folderName}" and all its contents?`)) {
-      onDeleteFolder(folderName, parentPath);
+    if (window.confirm(`Are you sure you want to delete this folder and all its contents?`)) {
+      onDeleteFolder(folderId, '');
     }
   };
 
@@ -408,7 +408,7 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
   const handleDownloadProject = () => {
     const link = document.createElement('a');
     link.href = '/api/download-project';
-    link.download = 'project.zip';
+    link.download = 'code-collaborator-project.zip';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -453,7 +453,7 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
           ))}
           
           {/* Render folders recursively */}
-          {Object.entries(project.folders || {}).map(([folderName, folder]) => 
+          {Object.values(project.folders || {}).map((folder) => 
             renderFolder(folder, 0)
           )}
         </FileTree>
@@ -507,6 +507,19 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
               </Select>
             </FormGroup>
             
+            <FormGroup>
+              <Label>Parent Folder (Optional)</Label>
+              <Select
+                value={selectedFolder}
+                onChange={(e) => setSelectedFolder(e.target.value)}
+              >
+                <option value="">Root Level</option>
+                {Object.values(project?.folders || {}).map((folder) => (
+                  <option key={folder.id} value={folder.path}>{folder.name}</option>
+                ))}
+              </Select>
+            </FormGroup>
+            
             <ButtonGroup>
               <Button
                 className="secondary"
@@ -549,8 +562,8 @@ const Sidebar = ({ project, currentFile, onFileSelect, onCreateFile, onDeleteFil
                 onChange={(e) => setSelectedFolder(e.target.value)}
               >
                 <option value="">Root Level</option>
-                {Object.entries(project?.folders || {}).map(([name, folder]) => (
-                  <option key={name} value={name}>{name}</option>
+                {Object.values(project?.folders || {}).map((folder) => (
+                  <option key={folder.id} value={folder.path}>{folder.name}</option>
                 ))}
               </Select>
             </FormGroup>
